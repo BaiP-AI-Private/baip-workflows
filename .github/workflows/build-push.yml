@@ -1,0 +1,113 @@
+name: Reusable - Build and Push Image
+
+on:
+  workflow_call:
+    inputs:
+      REGISTRY_URL:
+        type: string
+        required: true
+        description: "Container registry URL (e.g., myregistry.azurecr.io)"
+      IMAGE_TAG:
+        type: string
+        required: true
+        description: "Image tag to apply (e.g., abc1234-20260303 or v1.0.0)"
+      DOCKERFILE_PATH:
+        required: false
+        type: string
+        default: "./Dockerfile"
+        description: "Path to Dockerfile"
+      BUILD_ARGS:
+        required: false
+        type: string
+        default: ""
+        description: 'Additional build arguments (format: "KEY1=value1 KEY2=value2" or multiline)'
+
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      GITHUB_PAT:
+        required: false
+
+    outputs:
+      image_tag:
+        description: "Image tag that was pushed"
+        value: ${{ jobs.build-and-push.outputs.image_tag }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    outputs:
+      image_tag: ${{ steps.set-image-path.outputs.image_tag }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_PAT || github.token }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: |
+          ACR_NAME=$(echo "${{ inputs.REGISTRY_URL }}" | cut -d'.' -f1)
+          az acr login --name "$ACR_NAME"
+
+      - name: Set Image Path
+        id: set-image-path
+        run: |
+          REPO_NAME="${{ github.event.repository.name }}"
+          IMAGE_TAG="${{ inputs.IMAGE_TAG }}"
+          FULL_PATH="${{ inputs.REGISTRY_URL }}/${REPO_NAME}:${IMAGE_TAG}"
+
+          echo "full_path=${FULL_PATH}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+          echo "### Image Build Info" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** \`${REPO_NAME}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** \`${IMAGE_TAG}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Full Path:** \`${FULL_PATH}\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Prepare Build Arguments
+        id: build-args
+        run: |
+          BUILD_ARGS_INPUT="${{ inputs.BUILD_ARGS }}"
+
+          if [ -z "$BUILD_ARGS_INPUT" ]; then
+            echo "formatted_args=" >> $GITHUB_OUTPUT
+          else
+            BUILD_ARGS_INPUT=$(echo "$BUILD_ARGS_INPUT" | tr '\n' ' ')
+            FORMATTED_ARGS=""
+            for arg in $BUILD_ARGS_INPUT; do
+              if [[ $arg == *"="* ]]; then
+                FORMATTED_ARGS="$FORMATTED_ARGS --build-arg $arg"
+              fi
+            done
+            echo "formatted_args=$FORMATTED_ARGS" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and Push
+        run: |
+          docker build --rm \
+            -t ${{ steps.set-image-path.outputs.full_path }} \
+            --file ${{ inputs.DOCKERFILE_PATH }} \
+            ${{ steps.build-args.outputs.formatted_args }} \
+            .
+          docker push ${{ steps.set-image-path.outputs.full_path }}
+
+      - name: Verify Image
+        run: |
+          docker manifest inspect ${{ steps.set-image-path.outputs.full_path }}
+          echo "Image successfully pushed: \`${{ steps.set-image-path.outputs.full_path }}\`" >> $GITHUB_STEP_SUMMARY

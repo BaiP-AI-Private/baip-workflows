@@ -1,0 +1,119 @@
+# CI/CD Caller Workflow
+#
+# Copy this file to .github/workflows/ci-cd.yml in your application repo.
+# No edits needed — service name is auto-derived from the repository name.
+#
+# Deployment flow:
+#   dev branch push     → image tagged {short_sha}-{YYYYMMDD}  → deploy to aks-baip/dev/
+#   main branch push    → nothing (no trigger)
+#   v*.*.* tag          → image tagged with git tag (e.g. v1.0.0) → deploy to aks-baip/stage/
+#   GitHub Release      → no build, reuses tag image             → deploy to aks-baip/prod/
+#
+# Required org-level secrets (set once, inherited by all repos):
+#   AZURE_CLIENT_ID       — Azure App Registration client ID (OIDC)
+#   AZURE_TENANT_ID       — Azure AD tenant ID
+#   AZURE_SUBSCRIPTION_ID — Azure subscription ID
+#   GITHUB_PAT            — GitHub PAT with write access to baip-argocd-helm
+
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - dev
+    tags:
+      - 'v*.*.*'
+  release:
+    types: [published]
+
+# Include event_name in the group so a tag push (→ stage) and its release (→ prod)
+# don't cancel each other — they share the same ref but are different events.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  # ----------------------------------------------------------
+  # Determine image tag, target environment, and whether a
+  # build is needed from the trigger type.
+  # ----------------------------------------------------------
+  determine-context:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag:   ${{ steps.set-context.outputs.image_tag }}
+      environment: ${{ steps.set-context.outputs.environment }}
+      needs_build: ${{ steps.set-context.outputs.needs_build }}
+    steps:
+      - name: Set deployment context
+        id: set-context
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # GitHub Release published — image already exists in ACR from the tag push.
+            # Just promote the same image to prod; no rebuild needed.
+            IMAGE_TAG="${{ github.event.release.tag_name }}"
+            ENVIRONMENT="prod"
+            NEEDS_BUILD="false"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            # New v*.*.* tag — build the release candidate and deploy to staging.
+            IMAGE_TAG="${{ github.ref_name }}"
+            ENVIRONMENT="stage"
+            NEEDS_BUILD="true"
+          else
+            # Push to dev branch — build a dev image with a unique sha-date tag.
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+            DATE=$(date +%Y%m%d)
+            IMAGE_TAG="${SHORT_SHA}-${DATE}"
+            ENVIRONMENT="dev"
+            NEEDS_BUILD="true"
+          fi
+
+          echo "image_tag=${IMAGE_TAG}"     >> $GITHUB_OUTPUT
+          echo "environment=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          echo "needs_build=${NEEDS_BUILD}" >> $GITHUB_OUTPUT
+
+          echo "### Deployment Context"                      >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** \`${ENVIRONMENT}\`"       >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tag:** \`${IMAGE_TAG}\`"           >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Required:** \`${NEEDS_BUILD}\`"    >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** \`${{ github.event_name }}\`" >> $GITHUB_STEP_SUMMARY
+
+  # ----------------------------------------------------------
+  # Build the Docker image and push to ACR.
+  # Skipped for release events — the image was already pushed
+  # when the tag was created.
+  # ----------------------------------------------------------
+  build:
+    needs: determine-context
+    if: needs.determine-context.outputs.needs_build == 'true'
+    permissions:
+      id-token: write  # required: OIDC token for ACR login inside the called workflow
+      contents: read
+    uses: BaiP-AI-Private/baip-workflows/.github/workflows/build-push.yml@main
+    with:
+      REGISTRY_URL: baipacr.azurecr.io
+      IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+      # DOCKERFILE_PATH: ./Dockerfile          # optional: custom Dockerfile location
+      # BUILD_ARGS: |                          # optional: Docker build arguments
+      #   APP_VERSION=${{ needs.determine-context.outputs.image_tag }}
+      #   NODE_ENV=production
+    secrets: inherit
+
+  # ----------------------------------------------------------
+  # Update the GitOps repo so ArgoCD picks up the new image.
+  # IMAGE_TAG comes from determine-context (not build output)
+  # so this works even when the build job is skipped.
+  # ----------------------------------------------------------
+  deploy:
+    needs: [determine-context, build]
+    if: |
+      always() &&
+      needs.determine-context.result == 'success' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    permissions:
+      contents: read
+    uses: BaiP-AI-Private/baip-workflows/.github/workflows/update-gitops.yml@main
+    with:
+      IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+      ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
+      REGISTRY_URL: baipacr.azurecr.io
+    secrets: inherit
