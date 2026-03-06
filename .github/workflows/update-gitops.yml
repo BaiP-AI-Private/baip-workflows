@@ -11,6 +11,11 @@ on:
         required: true
         type: string
         description: "Container registry URL (e.g., myregistry.azurecr.io)"
+      TYPE:
+        required: false
+        type: string
+        default: ""
+        description: "Optional service variant suffix (e.g. api, worker). Must match the TYPE used in build-push."
       ENVIRONMENT:
         required: false
         type: string
@@ -58,23 +63,31 @@ jobs:
       - name: Determine File Path
         id: determine-config
         run: |
-          REPO_NAME="${{ github.event.repository.name }}"
+          REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
           ENVIRONMENT="${{ inputs.ENVIRONMENT }}"
           IMAGE_TAG="${{ inputs.IMAGE_TAG }}"
           VALUES_PATH_PREFIX="${{ inputs.VALUES_PATH_PREFIX }}"
+          TYPE="${{ inputs.TYPE }}"
+
+          if [ -n "$TYPE" ]; then
+            SERVICE_NAME="${REPO_NAME}-${TYPE}"
+          else
+            SERVICE_NAME="${REPO_NAME}"
+          fi
 
           if [ -n "$ENVIRONMENT" ]; then
-            VALUES_FILE="${VALUES_PATH_PREFIX}/${ENVIRONMENT}/${REPO_NAME}.yaml"
+            VALUES_FILE="${VALUES_PATH_PREFIX}/${ENVIRONMENT}/${SERVICE_NAME}.yaml"
           else
-            VALUES_FILE="${VALUES_PATH_PREFIX}/${REPO_NAME}.yaml"
+            VALUES_FILE="${VALUES_PATH_PREFIX}/${SERVICE_NAME}.yaml"
           fi
 
           echo "values_file=${VALUES_FILE}" >> $GITHUB_OUTPUT
           echo "final_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "repo_name=${REPO_NAME}" >> $GITHUB_OUTPUT
+          echo "service_name=${SERVICE_NAME}" >> $GITHUB_OUTPUT
 
           echo "### GitOps Configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- **Service:** \`${REPO_NAME}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service:** \`${SERVICE_NAME}\`" >> $GITHUB_STEP_SUMMARY
           if [ -n "$ENVIRONMENT" ]; then
             echo "- **Environment:** \`${ENVIRONMENT}\`" >> $GITHUB_STEP_SUMMARY
           else
@@ -88,7 +101,7 @@ jobs:
         id: update-values
         run: |
           VALUES_FILE="${{ steps.determine-config.outputs.values_file }}"
-          REPO_NAME="${{ steps.determine-config.outputs.repo_name }}"
+          SERVICE_NAME="${{ steps.determine-config.outputs.service_name }}"
           IMAGE_TAG="${{ steps.determine-config.outputs.final_tag }}"
 
           if [ ! -f "$VALUES_FILE" ]; then
@@ -98,7 +111,7 @@ jobs:
 
           cp "$VALUES_FILE" "${VALUES_FILE}.backup"
 
-          IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${REPO_NAME}"
+          IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}"
           yq eval ".image.repository = \"${IMAGE_REPO}\"" -i "$VALUES_FILE"
           yq eval ".image.tag = \"${IMAGE_TAG}\"" -i "$VALUES_FILE"
 
@@ -124,9 +137,9 @@ jobs:
           git add "$VALUES_FILE"
 
           cat << EOF > commit_msg.txt
-          Update ${{ steps.determine-config.outputs.repo_name }} image for ${{ inputs.ENVIRONMENT }}
+          Update ${{ steps.determine-config.outputs.service_name }} image for ${{ inputs.ENVIRONMENT }}
 
-          - Service: ${{ steps.determine-config.outputs.repo_name }}
+          - Service: ${{ steps.determine-config.outputs.service_name }}
           - Environment: ${{ inputs.ENVIRONMENT }}
           - Image Tag: ${{ steps.determine-config.outputs.final_tag }}
           - Triggered by: ${{ github.repository }}@${{ github.sha }}
@@ -210,10 +223,10 @@ jobs:
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `[Deployment] ${{ steps.determine-config.outputs.repo_name }} to ${{ inputs.ENVIRONMENT }}`,
+              title: `[Deployment] ${{ steps.determine-config.outputs.service_name }} to ${{ inputs.ENVIRONMENT }}`,
               body: `## Deployment Information
 
-              - **Service:** ${{ steps.determine-config.outputs.repo_name }}
+              - **Service:** ${{ steps.determine-config.outputs.service_name }}
               - **Environment:** ${{ inputs.ENVIRONMENT }}
               - **Image Tag:** ${{ steps.determine-config.outputs.final_tag }}
               - **Commit:** ${{ github.sha }}
