@@ -26,6 +26,11 @@ on:
         type: string
         default: ""
         description: 'Additional build arguments (format: "KEY1=value1 KEY2=value2" or multiline)'
+      ENVIRONMENT:
+        required: false
+        type: string
+        default: ""
+        description: "GitHub Environment name for OIDC subject claim (e.g. dev, stage, prod). Required when no branch/tag federated credential exists for the triggering ref."
 
     secrets:
       AZURE_CLIENT_ID:
@@ -45,6 +50,7 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.ENVIRONMENT }}
     permissions:
       contents: read
       id-token: write

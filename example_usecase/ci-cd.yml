@@ -92,6 +92,7 @@ jobs:
     with:
       REGISTRY_URL: baipacr.azurecr.io
       IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+      ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
       # TYPE: api                              # optional: variant suffix for multi-service repos (e.g. api, worker)
       # DOCKERFILE_PATH: ./Dockerfile          # optional: custom Dockerfile location
       # BUILD_ARGS: |                          # optional: Docker build arguments
@@ -109,7 +110,6 @@ jobs:
   # ----------------------------------------------------------
   # deploy:
   #   needs: [determine-context, build]
-  #   environment: ${{ needs.determine-context.outputs.environment }}
   #   if: |
   #     always() &&
   #     needs.determine-context.result == 'success' &&
@@ -134,7 +134,6 @@ jobs:
   #
   deploy:
     needs: [determine-context, build]
-    environment: ${{ needs.determine-context.outputs.environment }}
     if: |
       always() &&
       needs.determine-context.result == 'success' &&
