@@ -109,6 +109,7 @@ jobs:
   # ----------------------------------------------------------
   # deploy:
   #   needs: [determine-context, build]
+  #   environment: ${{ needs.determine-context.outputs.environment }}
   #   if: |
   #     always() &&
   #     needs.determine-context.result == 'success' &&
@@ -133,6 +134,7 @@ jobs:
   #
   deploy:
     needs: [determine-context, build]
+    environment: ${{ needs.determine-context.outputs.environment }}
     if: |
       always() &&
       needs.determine-context.result == 'success' &&
