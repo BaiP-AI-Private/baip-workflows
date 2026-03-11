@@ -22,7 +22,7 @@ on:
     branches:
       - dev
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
   release:
     types: [published]
 
@@ -40,7 +40,7 @@ jobs:
   determine-context:
     runs-on: ubuntu-latest
     outputs:
-      image_tag:   ${{ steps.set-context.outputs.image_tag }}
+      image_tag: ${{ steps.set-context.outputs.image_tag }}
       environment: ${{ steps.set-context.outputs.environment }}
       needs_build: ${{ steps.set-context.outputs.needs_build }}
     steps:
@@ -86,13 +86,13 @@ jobs:
     needs: determine-context
     if: needs.determine-context.outputs.needs_build == 'true'
     permissions:
-      id-token: write  # required: OIDC token for ACR login inside the called workflow
+      id-token: write # required: OIDC token for ACR login inside the called workflow
       contents: read
     uses: BaiP-AI-Private/baip-workflows/.github/workflows/build-push.yml@main
     with:
       REGISTRY_URL: baipacr.azurecr.io
-      IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
-      ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
+      IMAGE_TAG: ${{ needs.determine-context.outputs.image_tag }}
+      ENVIRONMENT: ${{ needs.determine-context.outputs.environment }}
       # TYPE: api                              # optional: variant suffix for multi-service repos (e.g. api, worker)
       # DOCKERFILE_PATH: ./Dockerfile          # optional: custom Dockerfile location
       # BUILD_ARGS: |                          # optional: Docker build arguments
@@ -140,14 +140,14 @@ jobs:
       (needs.build.result == 'success' || needs.build.result == 'skipped')
     permissions:
       contents: read
-      id-token: write   # required: OIDC token for Azure Key Vault access
-      issues: write     # required: create deployment tracking issue (prod only)
+      id-token: write # required: OIDC token for Azure Key Vault access
+      issues: write # required: create deployment tracking issue (prod only)
     uses: BaiP-AI-Private/baip-workflows/.github/workflows/update-gitops.yml@main
     with:
-      IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
-      ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
+      IMAGE_TAG: ${{ needs.determine-context.outputs.image_tag }}
+      ENVIRONMENT: ${{ needs.determine-context.outputs.environment }}
       REGISTRY_URL: baipacr.azurecr.io
-      AUTH_METHOD:  deploy_key
+      AUTH_METHOD: deploy_key
       # TYPE: api                            # optional: must match build TYPE if set
       # AZURE_KEYVAULT_NAME: baip-kv         # default
       # AZURE_KEYVAULT_SECRET_NAME: baip-argocd-helm-deploy-key  # default
