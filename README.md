@@ -40,12 +40,18 @@ Updates `image.repository` and `image.tag` in a Helm values file in a GitOps rep
 | `REGISTRY_URL` | yes | — | Container registry hostname |
 | `ENVIRONMENT` | no | `""` | Target environment (`dev`, `stage`, `prod`). When omitted, uses a flat path. |
 | `VALUES_PATH_PREFIX` | no | `aks-baip` | Root folder inside the GitOps repo containing values files |
-| `GITOPS_REPO` | no | — | GitOps repository (`org/repo`) |
+| `GITOPS_REPO` | no | `BaiP-AI-Private/baip-argocd-helm` | GitOps repository (`org/repo`) |
 | `GITOPS_BRANCH` | no | `main` | Branch to commit to |
+| `AUTH_METHOD` | no | `pat` | Auth method for GitOps repo: `pat` or `deploy_key` (see below) |
+| `AZURE_KEYVAULT_NAME` | no | `baip-kv` | Key Vault name (deploy_key mode only) |
+| `AZURE_KEYVAULT_SECRET_NAME` | no | `baip-argocd-helm-deploy-key` | Secret name containing the SSH deploy key (deploy_key mode only) |
 
-| Secret | Required |
-|---|---|
-| `GITHUB_PAT` | yes |
+| Secret | Required for | Description |
+|---|---|---|
+| `GITHUB_PAT` | `pat` mode | PAT with write access to the GitOps repo |
+| `AZURE_CLIENT_ID` | `deploy_key` mode | App Registration client ID (OIDC) |
+| `AZURE_TENANT_ID` | `deploy_key` mode | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | `deploy_key` mode | Azure subscription ID |
 
 **Values file path:**
 
@@ -75,14 +81,59 @@ No edits required — the service name is auto-derived from `github.event.reposi
 | Publish GitHub Release | reuses tag image, no rebuild | `prod` |
 | Push to `main` | — | no workflow runs |
 
+### Authentication methods
+
+Two options are available for authenticating the GitOps repo push:
+
+#### Option A: GitHub PAT (default)
+
+Uses a personal access token stored as an org secret. No extra permissions needed on the caller job.
+
+```yaml
+deploy:
+  permissions:
+    contents: read
+  uses: BaiP-AI-Private/baip-workflows/.github/workflows/update-gitops.yml@main
+  with:
+    IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+    ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
+    REGISTRY_URL: baipacr.azurecr.io
+    # AUTH_METHOD defaults to 'pat'
+  secrets: inherit
+```
+
+**Required org secret:** `GITHUB_PAT` with write access to `baip-argocd-helm`.
+
+#### Option B: Azure Key Vault deploy key (no PAT needed)
+
+Fetches an SSH deploy key from Azure Key Vault using the existing OIDC app (`baip-github-actions`). The deploy key is scoped to `baip-argocd-helm` only. The caller job must declare `id-token: write` for OIDC to work.
+
+```yaml
+deploy:
+  permissions:
+    contents: read
+    id-token: write   # required for Azure OIDC login
+    issues: write     # required for prod deployment tracking issue
+  uses: BaiP-AI-Private/baip-workflows/.github/workflows/update-gitops.yml@main
+  with:
+    IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+    ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
+    REGISTRY_URL: baipacr.azurecr.io
+    AUTH_METHOD:  deploy_key
+  secrets: inherit
+```
+
+**Required org secrets:** `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
+The OIDC app must have `Key Vault Secrets User` role scoped to the `baip-argocd-helm-deploy-key` secret in `baip-kv`.
+
 ### Required secrets
 
-| Secret | Description |
-|---|---|
-| `AZURE_CLIENT_ID` | App Registration client ID (OIDC) |
-| `AZURE_TENANT_ID` | Azure AD tenant ID |
-| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
-| `GITHUB_PAT` | PAT with write access to the GitOps repo |
+| Secret | Auth method | Description |
+|---|---|---|
+| `AZURE_CLIENT_ID` | both | App Registration client ID (OIDC) |
+| `AZURE_TENANT_ID` | both | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | both | Azure subscription ID |
+| `GITHUB_PAT` | `pat` only | PAT with write access to the GitOps repo |
 
 ### Passing Docker build arguments
 

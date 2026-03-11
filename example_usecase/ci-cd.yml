@@ -13,7 +13,7 @@
 #   AZURE_CLIENT_ID       — Azure App Registration client ID (OIDC)
 #   AZURE_TENANT_ID       — Azure AD tenant ID
 #   AZURE_SUBSCRIPTION_ID — Azure subscription ID
-#   GITHUB_PAT            — GitHub PAT with write access to baip-argocd-helm
+#   GITHUB_PAT            — GitHub PAT with write access to baip-argocd-helm (pat auth only)
 
 name: CI/CD
 
@@ -103,7 +103,34 @@ jobs:
   # Update the GitOps repo so ArgoCD picks up the new image.
   # IMAGE_TAG comes from determine-context (not build output)
   # so this works even when the build job is skipped.
+  #
+  # Option A (default): GitHub PAT auth
+  #   Requires GITHUB_PAT org secret.
   # ----------------------------------------------------------
+  # deploy:
+  #   needs: [determine-context, build]
+  #   if: |
+  #     always() &&
+  #     needs.determine-context.result == 'success' &&
+  #     (needs.build.result == 'success' || needs.build.result == 'skipped')
+  #   permissions:
+  #     contents: read
+  #   uses: BaiP-AI-Private/baip-workflows/.github/workflows/update-gitops.yml@main
+  #   with:
+  #     IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+  #     ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
+  #     REGISTRY_URL: baipacr.azurecr.io
+  #     # TYPE: api                              # optional: must match build TYPE if set
+  #   secrets: inherit
+
+  # ----------------------------------------------------------
+  # Option B: Azure Key Vault deploy key auth (no GITHUB_PAT needed)
+  #
+  # Replace the 'deploy' job above with this block to use an
+  # SSH deploy key fetched from Azure Key Vault via OIDC.
+  # The OIDC app must have 'Key Vault Secrets User' role scoped
+  # to the specific secret in baip-kv.
+  #
   deploy:
     needs: [determine-context, build]
     if: |
@@ -112,10 +139,16 @@ jobs:
       (needs.build.result == 'success' || needs.build.result == 'skipped')
     permissions:
       contents: read
+      id-token: write   # required: OIDC token for Azure Key Vault access
+      issues: write     # required: create deployment tracking issue (prod only)
     uses: BaiP-AI-Private/baip-workflows/.github/workflows/update-gitops.yml@main
     with:
       IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
       ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
       REGISTRY_URL: baipacr.azurecr.io
-      # TYPE: api                              # optional: must match build TYPE if set
+      AUTH_METHOD:  deploy_key
+      # TYPE: api                            # optional: must match build TYPE if set
+      # AZURE_KEYVAULT_NAME: baip-kv         # default
+      # AZURE_KEYVAULT_SECRET_NAME: baip-argocd-helm-deploy-key  # default
     secrets: inherit
+  # ----------------------------------------------------------

@@ -36,23 +36,74 @@ on:
         type: string
         default: "main"
         description: "GitOps repository branch"
+      AUTH_METHOD:
+        required: false
+        type: string
+        default: "pat"
+        description: "Auth method for GitOps repo access: 'pat' (GitHub PAT) or 'deploy_key' (SSH key from Azure Key Vault via OIDC)"
+      AZURE_KEYVAULT_NAME:
+        required: false
+        type: string
+        default: "baip-kv"
+        description: "Azure Key Vault name (used when AUTH_METHOD=deploy_key)"
+      AZURE_KEYVAULT_SECRET_NAME:
+        required: false
+        type: string
+        default: "baip-argocd-helm-deploy-key"
+        description: "Key Vault secret name containing the SSH deploy key (used when AUTH_METHOD=deploy_key)"
 
     secrets:
       GITHUB_PAT:
-        required: true
+        required: false         # required when AUTH_METHOD=pat
+      AZURE_CLIENT_ID:
+        required: false         # required when AUTH_METHOD=deploy_key
+      AZURE_TENANT_ID:
+        required: false         # required when AUTH_METHOD=deploy_key
+      AZURE_SUBSCRIPTION_ID:
+        required: false         # required when AUTH_METHOD=deploy_key
 
 jobs:
   update-gitops:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write  # required for OIDC Azure login (deploy_key mode)
+      issues: write    # required to create deployment tracking issue
 
     steps:
+      - name: Azure Login
+        if: inputs.AUTH_METHOD == 'deploy_key'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Fetch Deploy Key from Key Vault
+        if: inputs.AUTH_METHOD == 'deploy_key'
+        run: |
+          KEY=$(az keyvault secret show \
+            --vault-name ${{ inputs.AZURE_KEYVAULT_NAME }} \
+            --name ${{ inputs.AZURE_KEYVAULT_SECRET_NAME }} \
+            --query value -o tsv)
+          echo "GITOPS_DEPLOY_KEY<<EOF" >> $GITHUB_ENV
+          echo "$KEY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Checkout GitOps Repository
+        if: inputs.AUTH_METHOD != 'deploy_key'
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.GITOPS_REPO }}
           token: ${{ secrets.GITHUB_PAT }}
+          ref: ${{ inputs.GITOPS_BRANCH }}
+
+      - name: Checkout GitOps Repository
+        if: inputs.AUTH_METHOD == 'deploy_key'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.GITOPS_REPO }}
+          ssh-key: ${{ env.GITOPS_DEPLOY_KEY }}
           ref: ${{ inputs.GITOPS_BRANCH }}
 
       - name: Setup Git Config
@@ -95,6 +146,7 @@ jobs:
           fi
           echo "- **Image Tag:** \`${IMAGE_TAG}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Values File:** \`${VALUES_FILE}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Auth Method:** \`${{ inputs.AUTH_METHOD }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
       - name: Update Helm Values
@@ -218,7 +270,7 @@ jobs:
         if: steps.update-values.outputs.modified == 'true' && inputs.ENVIRONMENT == 'prod'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_PAT }}
+          github-token: ${{ inputs.AUTH_METHOD == 'deploy_key' && github.token || secrets.GITHUB_PAT }}
           script: |
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
