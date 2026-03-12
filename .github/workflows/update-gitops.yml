@@ -93,7 +93,11 @@ jobs:
             -H "Authorization: Bearer ${KV_TOKEN}" \
             "https://${{ inputs.AZURE_KEYVAULT_NAME }}.vault.azure.net/secrets/${{ inputs.AZURE_KEYVAULT_SECRET_NAME }}?api-version=7.4" \
             | jq -r '.value')
-          echo "::add-mask::${KEY}"
+          # Mask each line individually — ::add-mask:: only redacts exact single-line matches
+          # so a multiline SSH key must be masked line by line to prevent log exposure.
+          while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::${line}"
+          done <<< "$KEY"
           echo "GITOPS_DEPLOY_KEY<<EOF" >> $GITHUB_ENV
           echo "$KEY" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
