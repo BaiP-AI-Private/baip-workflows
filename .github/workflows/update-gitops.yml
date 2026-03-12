@@ -20,7 +20,7 @@ on:
         required: false
         type: string
         default: ""
-        description: "Target environment (dev, stage, prod). When omitted, path is flat: {VALUES_PATH_PREFIX}/{repo}.yaml"
+        description: "Target environment (dev, prod, enterprise). When omitted, path is flat: {VALUES_PATH_PREFIX}/{repo}.yaml"
       VALUES_PATH_PREFIX:
         required: false
         type: string
@@ -120,7 +120,7 @@ jobs:
       - name: Determine File Path
         id: determine-config
         run: |
-          REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
           ENVIRONMENT="${{ inputs.ENVIRONMENT }}"
           IMAGE_TAG="${{ inputs.IMAGE_TAG }}"
           VALUES_PATH_PREFIX="${{ inputs.VALUES_PATH_PREFIX }}"
@@ -169,7 +169,11 @@ jobs:
 
           cp "$VALUES_FILE" "${VALUES_FILE}.backup"
 
-          IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}"
+          if [ -n "${{ inputs.ENVIRONMENT }}" ]; then
+            IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${{ inputs.ENVIRONMENT }}/${SERVICE_NAME}"
+          else
+            IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}"
+          fi
           yq eval ".image.repository = \"${IMAGE_REPO}\"" -i "$VALUES_FILE"
           yq eval ".image.tag = \"${IMAGE_TAG}\"" -i "$VALUES_FILE"
 
@@ -273,7 +277,7 @@ jobs:
           echo "**ArgoCD will sync this change automatically**" >> $GITHUB_STEP_SUMMARY
 
       - name: Create Deployment Tracking Issue
-        if: steps.update-values.outputs.modified == 'true' && inputs.ENVIRONMENT == 'prod'
+        if: steps.update-values.outputs.modified == 'true' && inputs.ENVIRONMENT == 'enterprise'
         uses: actions/github-script@v7
         with:
           github-token: ${{ inputs.AUTH_METHOD == 'deploy_key' && github.token || secrets.GITHUB_PAT }}

@@ -6,8 +6,8 @@
 # Deployment flow:
 #   dev branch push     → image tagged {short_sha}-{YYYYMMDD}  → deploy to aks-baip/dev/
 #   main branch push    → nothing (no trigger)
-#   v*.*.* tag          → image tagged with git tag (e.g. v1.0.0) → deploy to aks-baip/stage/
-#   GitHub Release      → no build, reuses tag image             → deploy to aks-baip/prod/
+#   v*.*.* tag          → image tagged with git tag (e.g. v1.0.0) → deploy to aks-baip/prod/
+#   GitHub Release      → no build, reuses tag image             → deploy to aks-baip/enterprise/
 #
 # Required org-level secrets (set once, inherited by all repos):
 #   AZURE_CLIENT_ID       — Azure App Registration client ID (OIDC)
@@ -49,14 +49,14 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             # GitHub Release published — image already exists in ACR from the tag push.
-            # Just promote the same image to prod; no rebuild needed.
+            # Just promote the same image to enterprise; no rebuild needed.
             IMAGE_TAG="${{ github.event.release.tag_name }}"
-            ENVIRONMENT="prod"
+            ENVIRONMENT="enterprise"
             NEEDS_BUILD="false"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            # New v*.*.* tag — build the release candidate and deploy to staging.
+            # New v*.*.* tag — build the release candidate and deploy to prod.
             IMAGE_TAG="${{ github.ref_name }}"
-            ENVIRONMENT="stage"
+            ENVIRONMENT="prod"
             NEEDS_BUILD="true"
           else
             # Push to dev branch — build a dev image with a unique sha-date tag.
@@ -92,6 +92,7 @@ jobs:
     with:
       REGISTRY_URL: baipacr.azurecr.io
       IMAGE_TAG:    ${{ needs.determine-context.outputs.image_tag }}
+      ENVIRONMENT:  ${{ needs.determine-context.outputs.environment }}
       # TYPE: api                              # optional: variant suffix for multi-service repos (e.g. api, worker)
       # DOCKERFILE_PATH: ./Dockerfile          # optional: custom Dockerfile location
       # BUILD_ARGS: |                          # optional: Docker build arguments

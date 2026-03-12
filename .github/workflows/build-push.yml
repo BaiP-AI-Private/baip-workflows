@@ -78,9 +78,10 @@ jobs:
       - name: Set Image Path
         id: set-image-path
         run: |
-          REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
           IMAGE_TAG="${{ inputs.IMAGE_TAG }}"
           TYPE="${{ inputs.TYPE }}"
+          ENVIRONMENT="${{ inputs.ENVIRONMENT }}"
 
           if [ -n "$TYPE" ]; then
             SERVICE_NAME="${REPO_NAME}-${TYPE}"
@@ -88,7 +89,11 @@ jobs:
             SERVICE_NAME="${REPO_NAME}"
           fi
 
-          FULL_PATH="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}:${IMAGE_TAG}"
+          if [ -n "$ENVIRONMENT" ]; then
+            FULL_PATH="${{ inputs.REGISTRY_URL }}/${ENVIRONMENT}/${SERVICE_NAME}:${IMAGE_TAG}"
+          else
+            FULL_PATH="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}:${IMAGE_TAG}"
+          fi
 
           echo "full_path=${FULL_PATH}" >> $GITHUB_OUTPUT
           echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
