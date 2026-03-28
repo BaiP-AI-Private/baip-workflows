@@ -110,7 +110,7 @@ jobs:
           DOCKERFILE: ${{ inputs.DOCKERFILE_PATH }}
         run: |
           # Build --build-arg array from multiline BUILD_ARGS env var.
-          # Using env: (not inline ${{ }}) so secret values are NOT masked by the runner.
+          # Using env: (not inline expressions) so secret values are NOT masked by the runner.
           declare -a ARG_FLAGS=()
           if [ -n "$BUILD_ARGS" ]; then
             while IFS= read -r line || [[ -n "$line" ]]; do
