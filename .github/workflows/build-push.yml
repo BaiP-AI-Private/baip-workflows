@@ -103,32 +103,28 @@ jobs:
           echo "- **Tag:** \`${IMAGE_TAG}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Full Path:** \`${FULL_PATH}\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Prepare Build Arguments
-        id: build-args
+      - name: Build and Push
+        env:
+          BUILD_ARGS: ${{ inputs.BUILD_ARGS }}
+          IMAGE_PATH: ${{ steps.set-image-path.outputs.full_path }}
+          DOCKERFILE: ${{ inputs.DOCKERFILE_PATH }}
         run: |
-          BUILD_ARGS_INPUT="${{ inputs.BUILD_ARGS }}"
-
-          if [ -z "$BUILD_ARGS_INPUT" ]; then
-            echo "formatted_args=" >> $GITHUB_OUTPUT
-          else
-            BUILD_ARGS_INPUT=$(echo "$BUILD_ARGS_INPUT" | tr '\n' ' ')
-            FORMATTED_ARGS=""
-            for arg in $BUILD_ARGS_INPUT; do
-              if [[ $arg == *"="* ]]; then
-                FORMATTED_ARGS="$FORMATTED_ARGS --build-arg $arg"
-              fi
-            done
-            echo "formatted_args=$FORMATTED_ARGS" >> $GITHUB_OUTPUT
+          # Build --build-arg array from multiline BUILD_ARGS env var.
+          # Using env: (not inline ${{ }}) so secret values are NOT masked by the runner.
+          declare -a ARG_FLAGS=()
+          if [ -n "$BUILD_ARGS" ]; then
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              [[ -z "$line" ]] && continue
+              [[ "$line" == *"="* ]] && ARG_FLAGS+=(--build-arg "$line")
+            done <<< "$BUILD_ARGS"
           fi
 
-      - name: Build and Push
-        run: |
           docker build --rm \
-            -t ${{ steps.set-image-path.outputs.full_path }} \
-            --file ${{ inputs.DOCKERFILE_PATH }} \
-            ${{ steps.build-args.outputs.formatted_args }} \
+            -t "$IMAGE_PATH" \
+            --file "$DOCKERFILE" \
+            "${ARG_FLAGS[@]}" \
             .
-          docker push ${{ steps.set-image-path.outputs.full_path }}
+          docker push "$IMAGE_PATH"
 
       - name: Verify Image
         run: |
