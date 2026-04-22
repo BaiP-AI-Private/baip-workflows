@@ -21,6 +21,11 @@ on:
         type: string
         default: ""
         description: "Target environment (dev, prod, enterprise). When omitted, path is flat: {VALUES_PATH_PREFIX}/{repo}.yaml"
+      REGISTRY_ENVIRONMENT:
+        required: false
+        type: string
+        default: ""
+        description: "Override registry env used in image.repository path. Defaults to ENVIRONMENT when empty. Set to 'prod' for enterprise to reuse prod images."
       VALUES_PATH_PREFIX:
         required: false
         type: string
@@ -175,8 +180,10 @@ jobs:
 
           cp "$VALUES_FILE" "${VALUES_FILE}.backup"
 
-          if [ -n "${{ inputs.ENVIRONMENT }}" ]; then
-            IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${{ inputs.ENVIRONMENT }}/${SERVICE_NAME}"
+          REGISTRY_ENV="${{ inputs.REGISTRY_ENVIRONMENT }}"
+          if [ -z "$REGISTRY_ENV" ]; then REGISTRY_ENV="${{ inputs.ENVIRONMENT }}"; fi
+          if [ -n "$REGISTRY_ENV" ]; then
+            IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${REGISTRY_ENV}/${SERVICE_NAME}"
           else
             IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}"
           fi
