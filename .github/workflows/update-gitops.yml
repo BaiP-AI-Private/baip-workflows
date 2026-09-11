@@ -29,8 +29,12 @@ on:
       VALUES_PATH_PREFIX:
         required: false
         type: string
-        default: "aks-baip"
-        description: "Root folder inside the GitOps repo containing values files (e.g., aks-baip)"
+        default: "rke2-baip"
+        description: >-
+          Root folder inside the GitOps repo containing values files. Defaults to
+          the live cluster: rke2-baip (Hostup). Pass "aks-baip" to target the
+          Azure tree instead - it still exists and still serves traffic until the
+          DNS cutover, it just no longer receives image updates by default.
       GITOPS_REPO:
         required: false
         type: string
@@ -39,8 +43,12 @@ on:
       GITOPS_BRANCH:
         required: false
         type: string
-        default: "main"
-        description: "GitOps repository branch"
+        default: "rke2-baip"
+        description: >-
+          GitOps repository branch. This is a LITERAL branch name, not "whatever
+          the default branch is", so it must be changed here even if the repo's
+          default branch changes. The rke2-baip values live on the rke2-baip
+          branch; main still holds the aks-baip tree.
       AUTH_METHOD:
         required: false
         type: string
@@ -141,6 +149,23 @@ jobs:
             SERVICE_NAME="${REPO_NAME}-${TYPE}"
           else
             SERVICE_NAME="${REPO_NAME}"
+          fi
+
+          # The enterprise environment has NOT migrated to Hostup: rke2-baip has
+          # no enterprise values tree, and no appset selects an enterprise
+          # cluster (the rke2 clusters are dev and prod only). Without this it
+          # would resolve rke2-baip/enterprise/<svc>.yaml and fail with a
+          # confusing "Values file not found" on the first Release publish.
+          # Enterprise keeps targeting the Azure tree until it has a home on
+          # rke2. Note enterprise is currently dormant - 8 values files exist,
+          # but 0 applications and 0 namespaces are deployed.
+          if [ "$ENVIRONMENT" = "enterprise" ] && [ "$VALUES_PATH_PREFIX" = "rke2-baip" ]; then
+            # No branch change needed: the rke2-baip branch carries the aks-baip
+            # tree as well (it was branched from main), so the enterprise values
+            # resolve on the same checkout. A branch override here would be dead
+            # code anyway - the GitOps repo is checked out before this step runs.
+            echo "enterprise: no rke2-baip tree, using aks-baip values on this branch"
+            VALUES_PATH_PREFIX="aks-baip"
           fi
 
           if [ -n "$ENVIRONMENT" ]; then
