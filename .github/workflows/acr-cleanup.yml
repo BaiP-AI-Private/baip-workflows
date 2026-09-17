@@ -15,6 +15,19 @@
 # Scheduled runs use the repository default branch (main), which the Azure
 # federated credential trusts (claims['sub'] matches
 # 'repo:BaiP-AI-Private/*:ref:refs/heads/main').
+#
+# PREREQUISITE — AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID must
+# be set on THIS repo.
+#
+# They are per-repo values, not org-level. The other workflows here
+# (build-push.yml, update-gitops.yml) are `workflow_call` reusables that run in
+# the *caller's* context via `secrets: inherit`, so baip-workflows never needed
+# its own copy. This workflow has its own trigger and runs natively here, so it
+# does. Without them azure/login fails with:
+#
+#   Login failed ... Ensure 'client-id' and 'tenant-id' are supplied.
+#
+# The same applies to any future self-triggering workflow added to this repo.
 
 name: ACR cleanup
 
