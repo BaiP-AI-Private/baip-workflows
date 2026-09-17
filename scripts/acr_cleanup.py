@@ -63,9 +63,11 @@ Requirements:
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
+import time
 
 # Retention rules as "<repo-regex>:<ago>:<keep>". Both the lock list and --keep
 # guard the same images, so a values file that fails to parse is not instantly
@@ -90,25 +92,45 @@ def resolve(cmd):
     return [exe] + cmd[1:]
 
 
-def run(cmd, check=True, capture=True):
-    """Run a command, returning stdout. Raises on failure when check=True."""
-    proc = subprocess.run(
-        resolve(cmd),
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-    )
-    if check and proc.returncode != 0:
-        raise RuntimeError(
-            "command failed (%d): %s\n%s"
-            % (proc.returncode, " ".join(cmd), (proc.stderr or "").strip())
+def run(cmd, check=True, capture=True, retries=0):
+    """Run a command, returning (stdout, returncode). Raises when check=True.
+
+    ACR's data plane throttles under rapid sequential calls, and this script
+    makes one call per manifest across every repository. Without retries a
+    throttled call aborts the whole run partway through. Retries are opt-in
+    because they are only safe for the idempotent calls (list, show, attribute
+    update) -- never for starting a purge.
+    """
+    attempt, delay = 0, 2.0
+    while True:
+        proc = subprocess.run(
+            resolve(cmd),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
         )
-    return (proc.stdout or "").strip(), proc.returncode
+        if proc.returncode == 0:
+            return (proc.stdout or "").strip(), 0
+
+        if attempt < retries:
+            attempt += 1
+            print("    retry %d/%d after failure: %s"
+                  % (attempt, retries, (proc.stderr or "").strip().splitlines()[:1]))
+            time.sleep(delay)
+            delay *= 2
+            continue
+
+        if check:
+            raise RuntimeError(
+                "command failed (%d): %s\n%s"
+                % (proc.returncode, " ".join(cmd), (proc.stderr or "").strip())
+            )
+        return (proc.stdout or "").strip(), proc.returncode
 
 
-def az_json(args):
-    out, _ = run(["az"] + args + ["-o", "json"])
+def az_json(args, retries=4):
+    out, _ = run(["az"] + args + ["-o", "json"], retries=retries)
     return json.loads(out) if out else []
 
 
@@ -119,6 +141,22 @@ def list_repositories(registry):
 def list_manifests(registry, repo):
     return az_json(
         ["acr", "manifest", "list-metadata", "--registry", registry, "--name", repo]
+    )
+
+
+def list_tags_detail(registry, repo):
+    """Tags with their own changeableAttributes.
+
+    Locks live at TAG level, not manifest level. `az acr repository update
+    --image repo:tag --delete-enabled false` writes a tag attribute, and
+    `az acr manifest list-metadata` does NOT reflect it -- the same image can
+    read deleteEnabled=false as a tag and true as a manifest. Reading the wrong
+    one makes the unlock phase a silent no-op, which lets stale locks
+    accumulate until purge stops deleting anything.
+    """
+    return az_json(
+        ["acr", "repository", "show-tags", "--name", registry,
+         "--repository", repo, "--detail"]
     )
 
 
@@ -232,27 +270,32 @@ def in_use_from_cluster(registry):
 
 
 def phase_unlock(registry, dry_run):
-    """Clear delete-enabled=false everywhere, so this run starts from a clean
-    slate. Only touches artifacts that are actually locked."""
+    """Clear delete-enabled=false so this run starts from a clean slate.
+
+    Reads TAG-level attributes (see list_tags_detail). An earlier version read
+    manifest metadata here and therefore never saw a single lock, reporting
+    "unlocked: 0" forever while locks piled up -- the exact silent-no-op
+    failure this phase exists to prevent.
+    """
     print("\n=== phase 1: unlock ===")
     unlocked = 0
     for repo in list_repositories(registry):
-        for man in list_manifests(registry, repo):
-            attrs = man.get("changeableAttributes") or {}
+        for tag in list_tags_detail(registry, repo):
+            attrs = tag.get("changeableAttributes") or {}
             if attrs.get("deleteEnabled") is False:
-                for tag in man.get("tags") or []:
-                    target = "%s:%s" % (repo, tag)
-                    print("  unlock %s" % target)
-                    if not dry_run:
-                        run(
-                            [
-                                "az", "acr", "repository", "update",
-                                "--name", registry, "--image", target,
-                                "--delete-enabled", "true",
-                                "--write-enabled", "true",
-                            ]
-                        )
-                    unlocked += 1
+                target = "%s:%s" % (repo, tag.get("name"))
+                print("  unlock %s" % target)
+                if not dry_run:
+                    run(
+                        [
+                            "az", "acr", "repository", "update",
+                            "--name", registry, "--image", target,
+                            "--delete-enabled", "true",
+                            "--write-enabled", "true",
+                        ],
+                        retries=4,
+                    )
+                unlocked += 1
     print("  unlocked: %d" % unlocked)
     return unlocked
 
@@ -271,6 +314,7 @@ def phase_lock(registry, in_use, dry_run):
                     "--delete-enabled", "false",
                 ],
                 check=False,
+                retries=4,
             )
             if rc != 0:
                 # A referenced tag that no longer exists in ACR is a real
@@ -323,6 +367,7 @@ def acr_run(registry, cmd):
 
 def phase_purge(registry, rules, dry_run):
     print("\n=== phase 3: purge ===")
+    outputs = []
     filters = []
     for rule in rules:
         try:
@@ -339,7 +384,9 @@ def phase_purge(registry, rules, dry_run):
         if dry_run:
             cmd += " --dry-run"
         print("  %s" % cmd)
-        print(acr_run(registry, cmd))
+        out = acr_run(registry, cmd)
+        print(out)
+        outputs.append(out)
 
     # Dangling manifests across every repository. Safe by construction: an
     # untagged manifest is not referenced by any tag.
@@ -347,29 +394,130 @@ def phase_purge(registry, rules, dry_run):
     if dry_run:
         sweep += " --dry-run"
     print("  %s" % sweep)
-    print(acr_run(registry, sweep))
+    out = acr_run(registry, sweep)
+    print(out)
+    outputs.append(out)
+
+    return purge_counts("\n".join(outputs))
 
 
-def show_usage(registry, label):
+def purge_counts(out):
+    """Total deleted tags/manifests across every purge invocation.
+
+    acr purge words its totals differently per mode:
+      real     "Number of deleted tags: 4"
+      dry-run  "Number of tags to be deleted: 4"
+    """
+    def total(kind):
+        pat = r"Number of (?:deleted %s|%s to be deleted):\s*(\d+)" % (kind, kind)
+        return sum(int(n) for n in re.findall(pat, out))
+
+    return {"tags": total("tags"), "manifests": total("manifests")}
+
+
+def registry_size(registry):
+    """(used_bytes, limit_bytes), or None if unavailable."""
     try:
         usage = az_json(["acr", "show-usage", "--name", registry])
     except RuntimeError:
-        return
+        return None
     # show-usage returns {"value": [...]}, not a bare list.
     if isinstance(usage, dict):
         usage = usage.get("value") or []
     for row in usage:
         if row.get("name") == "Size":
-            cur, lim = int(row["currentValue"]), int(row["limit"])
-            print(
-                "%s: %.2f GiB used of %.2f GiB (%s)"
-                % (
-                    label,
-                    cur / 1073741824,
-                    lim / 1073741824,
-                    "OVER QUOTA" if cur > lim else "ok",
-                )
-            )
+            return int(row["currentValue"]), int(row["limit"])
+    return None
+
+
+def gib(n):
+    return n / 1073741824.0
+
+
+def show_usage(registry, label):
+    size = registry_size(registry)
+    if size is None:
+        return None
+    cur, lim = size
+    print(
+        "%s: %.2f GiB used of %.2f GiB (%s)"
+        % (label, gib(cur), gib(lim), "OVER QUOTA" if cur > lim else "ok")
+    )
+    return size
+
+
+def write_summary(path, stats):
+    """Render a GitHub step summary.
+
+    Deliberately not `tail` of the log: the numbers that matter (what was kept,
+    what was reclaimed) are spread across the whole run, and on an early
+    failure there is no useful tail at all.
+    """
+    if not path:
+        return
+
+    ok = stats.get("error") is None
+    mode = "dry run — nothing deleted" if stats.get("dry_run") else "live run"
+    lines = [
+        "## ACR cleanup — %s" % ("succeeded" if ok else "FAILED"),
+        "",
+        "`%s` · %s" % (stats.get("registry", "?"), mode),
+        "",
+    ]
+
+    if not ok:
+        lines += ["> [!CAUTION]", "> ```", ]
+        lines += ["> " + ln for ln in str(stats["error"]).splitlines()]
+        lines += ["> ```", ""]
+
+    before, after = stats.get("before"), stats.get("after")
+    if before and after:
+        reclaimed = before[0] - after[0]
+        lines += [
+            "| | Used | Limit | |",
+            "|---|---|---|---|",
+            "| Before | %.2f GiB | %.2f GiB | %s |"
+            % (gib(before[0]), gib(before[1]), "over quota" if before[0] > before[1] else "ok"),
+            "| After | %.2f GiB | %.2f GiB | %s |"
+            % (gib(after[0]), gib(after[1]), "over quota" if after[0] > after[1] else "ok"),
+            "| **Reclaimed** | **%.2f GiB** | | |" % gib(reclaimed),
+            "",
+        ]
+
+    counts = stats.get("counts") or {}
+    lines += [
+        "| Metric | Count |",
+        "|---|---|",
+        "| Images protected (locked) | %s |" % stats.get("locked", "-"),
+        "| Stale locks cleared | %s |" % stats.get("unlocked", "-"),
+        "| Tags %s | %s" % ("that would be deleted" if stats.get("dry_run") else "deleted",
+                            "%s |" % counts.get("tags", "-")),
+        "| Manifests %s | %s" % ("that would be deleted" if stats.get("dry_run") else "deleted",
+                                 "%s |" % counts.get("manifests", "-")),
+        "",
+    ]
+
+    safe = stats.get("safe_list") or []
+    if safe:
+        lines += [
+            "<details><summary>Protected from deletion (%d deployed images)</summary>" % len(safe),
+            "",
+            "```",
+        ]
+        lines += ["%s:%s" % (r, t) for r, t in sorted(safe)]
+        lines += ["```", "", "</details>", ""]
+
+    warnings = stats.get("warnings") or []
+    if warnings:
+        lines += ["<details><summary>Warnings (%d)</summary>" % len(warnings), "", "```"]
+        lines += warnings
+        lines += ["```", "", "</details>", ""]
+
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except OSError as exc:
+        print("WARNING: could not write summary: %s" % exc)
 
 
 def main():
@@ -410,30 +558,45 @@ def main():
             "prove this, because it never applies the locks."
         ),
     )
+    ap.add_argument(
+        "--summary-md",
+        metavar="PATH",
+        help=(
+            "Append a markdown run summary to PATH (e.g. $GITHUB_STEP_SUMMARY). "
+            "Written on failure too, so an early abort still reports why."
+        ),
+    )
     args = ap.parse_args()
     rules = args.rules or DEFAULT_RULES
+    stats = {"registry": args.registry, "dry_run": args.dry_run, "error": None,
+             "warnings": []}
 
     print("registry:   %s" % args.registry)
     print("values dir: %s" % args.values_dir)
     print("rules:      %s" % ", ".join(rules))
     print("dry run:    %s" % args.dry_run)
-    show_usage(args.registry, "\nbefore")
+    stats["before"] = show_usage(args.registry, "\nbefore")
 
     # --- build the safe-list ------------------------------------------------
     from_values, parsed, failed = in_use_from_values(args.values_dir, args.registry)
     print("\nvalues files: %d image refs from %d files" % (len(from_values), parsed))
     for problem in failed:
         print("  WARNING: %s" % problem)
+        stats["warnings"].append(problem)
 
     # An empty or partial safe-list combined with an aggressive purge is the
     # one combination that destroys a live environment. Refuse to continue.
     if failed:
-        sys.exit(
+        stats["error"] = (
             "ABORT: %d values file(s) could not be parsed. Refusing to purge with an "
             "incomplete safe-list." % len(failed)
         )
+        write_summary(args.summary_md, stats)
+        sys.exit(stats["error"])
     if not from_values:
-        sys.exit("ABORT: safe-list is empty. Refusing to purge.")
+        stats["error"] = "ABORT: safe-list is empty. Refusing to purge."
+        write_summary(args.summary_md, stats)
+        sys.exit(stats["error"])
 
     in_use = set(from_values)
     if args.skip_cluster:
@@ -442,6 +605,9 @@ def main():
         from_cluster = in_use_from_cluster(args.registry)
         if from_cluster is None:
             print("cluster:      WARNING unreachable, using values files only")
+            stats["warnings"].append(
+                "cluster unreachable; safe-list came from values files only"
+            )
         else:
             extra = from_cluster - from_values
             print(
@@ -455,17 +621,27 @@ def main():
     print("\nsafe-list (%d):" % len(in_use))
     for repo, tag in sorted(in_use):
         print("  %s:%s" % (repo, tag))
+    stats["safe_list"] = in_use
 
     # --- run the phases -----------------------------------------------------
-    phase_unlock(args.registry, args.dry_run)
-    phase_lock(args.registry, in_use, args.dry_run)
-    if args.lock_only:
-        print("\n--lock-only: stopping before purge.")
-        show_usage(args.registry, "\nafter")
-        return
-    phase_purge(args.registry, rules, args.dry_run)
+    # Any failure from here on still has to produce a summary, otherwise the
+    # run that most needs explaining is the one that explains nothing.
+    try:
+        stats["unlocked"] = phase_unlock(args.registry, args.dry_run)
+        stats["locked"] = phase_lock(args.registry, in_use, args.dry_run)
+        if args.lock_only:
+            print("\n--lock-only: stopping before purge.")
+            stats["after"] = show_usage(args.registry, "\nafter")
+            return
+        stats["counts"] = phase_purge(args.registry, rules, args.dry_run)
+    except RuntimeError as exc:
+        stats["error"] = str(exc)
+        raise
+    finally:
+        if stats.get("error") is None:
+            stats["after"] = show_usage(args.registry, "\nafter")
+        write_summary(args.summary_md, stats)
 
-    show_usage(args.registry, "\nafter")
     print("\ndone%s" % (" (dry run, nothing changed)" if args.dry_run else ""))
 
 

@@ -108,19 +108,31 @@ jobs:
             --registry "${REGISTRY}" \
             --values-dir argocd-helm/rke2-baip \
             --skip-cluster \
+            --summary-md "$GITHUB_STEP_SUMMARY" \
             ${DRY_RUN:+--dry-run} | tee cleanup.log
         env:
           REGISTRY: ${{ inputs.registry || 'baipacr' }}
           # Scheduled runs are real; manual runs default to dry-run.
           DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '' }}
 
-      - name: Summary
-        if: always()
+      # The script writes the real summary itself (--summary-md), because the
+      # numbers worth reporting are spread across the whole run -- a tail of the
+      # log shows only the purge output and cuts off what was protected.
+      # This step is a fallback for failures BEFORE the script got that far
+      # (login, Key Vault, checkout), where the summary would otherwise be empty.
+      - name: Summary fallback
+        if: failure()
         run: |
+          if [ -s "$GITHUB_STEP_SUMMARY" ]; then
+            exit 0   # script already wrote its own summary
+          fi
           {
-            echo "### ACR cleanup"
+            echo "## ACR cleanup — FAILED before the cleanup script reported"
+            echo ""
+            echo "Failed in an earlier step (Azure login, Key Vault, or GitOps checkout)."
+            echo ""
             echo '```'
-            tail -40 cleanup.log 2>/dev/null || echo "no output"
+            tail -40 cleanup.log 2>/dev/null || echo "no script output — it never ran"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
