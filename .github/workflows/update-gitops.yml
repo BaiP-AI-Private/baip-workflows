@@ -86,7 +86,7 @@ jobs:
     steps:
       - name: Azure Login
         if: inputs.AUTH_METHOD == 'deploy_key'
-        uses: azure/login@v2
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -117,7 +117,7 @@ jobs:
 
       - name: Checkout GitOps Repository
         if: inputs.AUTH_METHOD != 'deploy_key'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.GITOPS_REPO }}
           token: ${{ secrets.GITHUB_PAT }}
@@ -125,7 +125,7 @@ jobs:
 
       - name: Checkout GitOps Repository
         if: inputs.AUTH_METHOD == 'deploy_key'
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.GITOPS_REPO }}
           ssh-key: ${{ env.GITOPS_DEPLOY_KEY }}
@@ -316,7 +316,7 @@ jobs:
 
       - name: Create Deployment Tracking Issue
         if: steps.update-values.outputs.modified == 'true' && inputs.ENVIRONMENT == 'enterprise'
-        uses: actions/github-script@v7
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: ${{ inputs.AUTH_METHOD == 'deploy_key' && github.token || secrets.GITHUB_PAT }}
           script: |
