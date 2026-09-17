@@ -99,6 +99,11 @@ jobs:
       # script treats kubectl as best-effort and falls back to values files.
       - name: Run cleanup
         run: |
+          # pipefail is essential: without it the pipeline takes tee's exit
+          # code and a failed cleanup reports the job green. A cleanup that
+          # silently stops working is the failure mode this whole design is
+          # built to avoid, so it must fail loudly.
+          set -o pipefail
           python scripts/acr_cleanup.py \
             --registry "${REGISTRY}" \
             --values-dir argocd-helm/rke2-baip \
