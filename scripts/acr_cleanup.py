@@ -278,8 +278,13 @@ def phase_unlock(registry, dry_run):
     failure this phase exists to prevent.
     """
     print("\n=== phase 1: unlock ===")
+    repos = list_repositories(registry)
+    # One API call per repository, so this is the slowest phase and the one
+    # most likely to look hung. Report progress rather than going silent.
+    print("  scanning %d repositories for stale locks" % len(repos))
     unlocked = 0
-    for repo in list_repositories(registry):
+    for i, repo in enumerate(repos, 1):
+        print("  [%d/%d] %s" % (i, len(repos), repo))
         for tag in list_tags_detail(registry, repo):
             attrs = tag.get("changeableAttributes") or {}
             if attrs.get("deleteEnabled") is False:

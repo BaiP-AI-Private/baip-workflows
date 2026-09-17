@@ -104,7 +104,12 @@ jobs:
           # silently stops working is the failure mode this whole design is
           # built to avoid, so it must fail loudly.
           set -o pipefail
-          python scripts/acr_cleanup.py \
+          # -u is required, not cosmetic. Piping into tee makes stdout a pipe,
+          # so Python block-buffers it: the step shows nothing for minutes and
+          # then dumps everything at once, interleaved out of order with
+          # unbuffered stderr -- and loses the buffer entirely if the job is
+          # cancelled or times out. -u streams it live and in order.
+          python -u scripts/acr_cleanup.py \
             --registry "${REGISTRY}" \
             --values-dir argocd-helm/rke2-baip \
             --skip-cluster \
