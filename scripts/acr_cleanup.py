@@ -282,6 +282,45 @@ def phase_lock(registry, in_use, dry_run):
     return locked
 
 
+def acr_run(registry, cmd):
+    """Start an ACR Task run, translating the misleading RBAC error.
+
+    If the principal lacks control-plane read on the registry, Azure reports
+    the registry as missing rather than forbidden:
+
+      The resource with name 'baipacr' and type
+      'Microsoft.ContainerRegistry/registries' could not be found in
+      subscription ...
+
+    AcrPush grants only data-plane actions (pull/read, push/write), so a
+    principal that can push images still cannot resolve the registry by name
+    and never reaches scheduleRun. The registry is fine; the role is not.
+    """
+    try:
+        out, _ = run(
+            [
+                "az", "acr", "run",
+                "--registry", registry,
+                "--timeout", str(PURGE_TIMEOUT),
+                "--cmd", cmd,
+                "/dev/null",
+            ]
+        )
+    except RuntimeError as exc:
+        if "could not be found in subscription" in str(exc):
+            raise RuntimeError(
+                "%s\n\n"
+                "  HINT: this almost certainly means missing RBAC, not a missing registry.\n"
+                "  '%s' exists but this principal cannot read it at the control plane.\n"
+                "  AcrPush covers only pull/read + push/write (data plane).\n"
+                "  Needs Microsoft.ContainerRegistry/registries/read and .../scheduleRun/action\n"
+                "  -- see the 'ACR Purge Runner' role in\n"
+                "  baip-infra-tools/terraform/11-az-github-fedarated-access.tf" % (exc, registry)
+            )
+        raise
+    return out
+
+
 def phase_purge(registry, rules, dry_run):
     print("\n=== phase 3: purge ===")
     filters = []
@@ -300,16 +339,7 @@ def phase_purge(registry, rules, dry_run):
         if dry_run:
             cmd += " --dry-run"
         print("  %s" % cmd)
-        out, _ = run(
-            [
-                "az", "acr", "run",
-                "--registry", registry,
-                "--timeout", str(PURGE_TIMEOUT),
-                "--cmd", cmd,
-                "/dev/null",
-            ]
-        )
-        print(out)
+        print(acr_run(registry, cmd))
 
     # Dangling manifests across every repository. Safe by construction: an
     # untagged manifest is not referenced by any tag.
@@ -317,16 +347,7 @@ def phase_purge(registry, rules, dry_run):
     if dry_run:
         sweep += " --dry-run"
     print("  %s" % sweep)
-    out, _ = run(
-        [
-            "az", "acr", "run",
-            "--registry", registry,
-            "--timeout", str(PURGE_TIMEOUT),
-            "--cmd", sweep,
-            "/dev/null",
-        ]
-    )
-    print(out)
+    print(acr_run(registry, sweep))
 
 
 def show_usage(registry, label):
