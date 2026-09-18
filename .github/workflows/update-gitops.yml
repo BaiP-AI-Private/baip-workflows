@@ -15,7 +15,18 @@ on:
         required: false
         type: string
         default: ""
-        description: "Optional service variant suffix (e.g. api, worker). Must match the TYPE used in build-push."
+        description: "Optional service variant suffix (e.g. api, worker). Must match the TYPE used in build-push. Also picks the values file: {repo}-{TYPE}.yaml."
+      IMAGE_REPOSITORY_OVERRIDE:
+        required: false
+        type: string
+        default: ""
+        description: >-
+          Full image repository path to write into image.repository, bypassing the
+          {REGISTRY_URL}/{REGISTRY_ENV}/{repo}-{TYPE} default. For a variant that reuses
+          another TYPE's already-built image (e.g. a celery worker/flower running the
+          same image as the api via a command/args override) rather than building its
+          own — TYPE still selects which values file gets patched, this only changes
+          which image path is written into it. Leave empty for the normal one-image-per-TYPE case.
       ENVIRONMENT:
         required: false
         type: string
@@ -205,12 +216,17 @@ jobs:
 
           cp "$VALUES_FILE" "${VALUES_FILE}.backup"
 
-          REGISTRY_ENV="${{ inputs.REGISTRY_ENVIRONMENT }}"
-          if [ -z "$REGISTRY_ENV" ]; then REGISTRY_ENV="${{ inputs.ENVIRONMENT }}"; fi
-          if [ -n "$REGISTRY_ENV" ]; then
-            IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${REGISTRY_ENV}/${SERVICE_NAME}"
+          IMAGE_REPOSITORY_OVERRIDE="${{ inputs.IMAGE_REPOSITORY_OVERRIDE }}"
+          if [ -n "$IMAGE_REPOSITORY_OVERRIDE" ]; then
+            IMAGE_REPO="$IMAGE_REPOSITORY_OVERRIDE"
           else
-            IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}"
+            REGISTRY_ENV="${{ inputs.REGISTRY_ENVIRONMENT }}"
+            if [ -z "$REGISTRY_ENV" ]; then REGISTRY_ENV="${{ inputs.ENVIRONMENT }}"; fi
+            if [ -n "$REGISTRY_ENV" ]; then
+              IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${REGISTRY_ENV}/${SERVICE_NAME}"
+            else
+              IMAGE_REPO="${{ inputs.REGISTRY_URL }}/${SERVICE_NAME}"
+            fi
           fi
           yq eval ".image.repository = \"${IMAGE_REPO}\"" -i "$VALUES_FILE"
           yq eval ".image.tag = \"${IMAGE_TAG}\"" -i "$VALUES_FILE"
