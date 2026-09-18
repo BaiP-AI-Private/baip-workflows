@@ -160,12 +160,6 @@ def list_repositories(registry):
     return az_json(["acr", "repository", "list", "--name", registry])
 
 
-def list_manifests(registry, repo):
-    return az_json(
-        ["acr", "manifest", "list-metadata", "--registry", registry, "--name", repo]
-    )
-
-
 def list_tags_detail(registry, repo):
     """Tags with their own changeableAttributes.
 
