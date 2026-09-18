@@ -6,12 +6,16 @@ baipacr is a Standard-SKU registry (100 GiB included). ACR's built-in
 retention policy for untagged manifests is Premium-only, so cleanup is driven
 externally with `acr purge`, run as an on-demand ACR Task.
 
---- Why this is not just `acr purge --ago 7d` ---
+--- Retention is count based, not age based ---
 
-Age-based purging is unsafe on this registry, for two reasons:
+Keep the N most recently updated tags per repository; delete the rest whatever
+their age. See DEFAULT_RULES for how that maps onto acr purge.
+
+--- Why a plain `acr purge` is unsafe here ---
 
   1. Live deployments pin very old tags. dev/edai-speech2text has been running
-     2ba4009-20260507 for months. A bare `--ago 7d` would delete it.
+     2ba4009-20260507 for months, and it is not among the newest few, so
+     nothing but the lock list keeps it alive.
 
   2. The registry path does not follow the values directory. rke2-baip/prod/
      edai-agentic-ai-scraper.yaml deliberately points at a *dev* image because
@@ -51,9 +55,9 @@ Usage:
   python scripts/acr_cleanup.py --registry baipacr \\
     --values-dir /path/to/baip-argocd-helm/rke2-baip
 
-  # Different retention:
+  # Different retention (<repo-regex>:<how many newest tags to keep>):
   python scripts/acr_cleanup.py --registry baipacr --values-dir ... \\
-    --rule 'dev/.*:7d:3' --rule 'prod/.*:90d:5'
+    --rule 'dev/.*:3' --rule 'prod/.*:5'
 
 Requirements:
   Azure CLI, authenticated. The principal needs AcrPush + AcrDelete, plus
@@ -69,10 +73,20 @@ import subprocess
 import sys
 import time
 
-# Retention rules as "<repo-regex>:<ago>:<keep>". Both the lock list and --keep
-# guard the same images, so a values file that fails to parse is not instantly
-# fatal.
-DEFAULT_RULES = ["dev/.*:7d:3", "prod/.*:90d:5"]
+# Retention rules as "<repo-regex>:<keep>" -- purely count based. Keep the N
+# most recently updated tags per repository and delete the rest, regardless of
+# age.
+#
+# acr purge has no count-only mode: --filter and --ago are both required. So
+# age is neutralised with `--ago 0d`, which the docs define as matching images
+# of all ages, leaving --keep as the only retention control.
+#
+# IMPORTANT consequence: with no age floor, EVERY tag is a deletion candidate.
+# Under the previous 7d/90d rules a recently pushed image was safe purely
+# because it was new. It no longer is. The lock list is now the only thing
+# protecting a deployed image that has fallen outside the newest N, so phase 2
+# is load-bearing in a way it was not before.
+DEFAULT_RULES = ["dev/.*:3", "prod/.*:5"]
 
 # az acr run's default on-demand timeout is 600s, which silently truncates a
 # large purge and deletes only a subset.
@@ -384,15 +398,19 @@ def phase_purge(registry, rules, dry_run):
     filters = []
     for rule in rules:
         try:
-            pattern, ago, keep = rule.split(":")
+            pattern, keep = rule.split(":")
+            int(keep)
         except ValueError:
-            raise RuntimeError("bad --rule %r, expected <regex>:<ago>:<keep>" % rule)
-        filters.append((pattern, ago, keep))
+            raise RuntimeError(
+                "bad --rule %r, expected <regex>:<keep> (count only, no age)" % rule
+            )
+        filters.append((pattern, keep))
 
-    for pattern, ago, keep in filters:
+    for pattern, keep in filters:
+        # --ago 0d matches every age, so --keep is the sole retention control.
         cmd = (
-            "acr purge --filter '%s:.*' --ago %s --keep %s --untagged"
-            % (pattern, ago, keep)
+            "acr purge --filter '%s:.*' --ago 0d --keep %s --untagged"
+            % (pattern, keep)
         )
         if dry_run:
             cmd += " --dry-run"
@@ -547,8 +565,9 @@ def main():
         "--rule",
         action="append",
         dest="rules",
-        metavar="REGEX:AGO:KEEP",
-        help="Retention rule, repeatable (default: %s)" % " ".join(DEFAULT_RULES),
+        metavar="REGEX:KEEP",
+        help="Keep N newest tags per matching repo, repeatable (default: %s)"
+        % " ".join(DEFAULT_RULES),
     )
     ap.add_argument(
         "--dry-run",
