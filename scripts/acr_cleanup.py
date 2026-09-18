@@ -95,11 +95,19 @@ def resolve(cmd):
 def run(cmd, check=True, capture=True, retries=0):
     """Run a command, returning (stdout, returncode). Raises when check=True.
 
-    ACR's data plane throttles under rapid sequential calls, and this script
-    makes one call per manifest across every repository. Without retries a
-    throttled call aborts the whole run partway through. Retries are opt-in
-    because they are only safe for the idempotent calls (list, show, attribute
-    update) -- never for starting a purge.
+    Retries exist as cheap insurance for transient ACR failures on a run that
+    makes one call per repository: a single blip would otherwise abort
+    everything partway through. They are opt-in because they are only safe for
+    idempotent calls (list, show, attribute update) -- never for starting a
+    purge.
+
+    Note: an earlier version of this comment blamed ACR throttling, based on a
+    local sweep where 21 of 22 repository queries failed. That diagnosis was
+    wrong. The real cause was `az ... -o tsv` emitting CRLF on Windows, so
+    every repository name except the last carried a trailing \\r and came back
+    "The requested data does not exist". This script is unaffected because it
+    parses JSON, not tsv -- but do not cite that incident as evidence of
+    throttling.
     """
     attempt, delay = 0, 2.0
     while True:
